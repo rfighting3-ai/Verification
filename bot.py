@@ -84,11 +84,14 @@ async def on_member_join(member: discord.Member):
     await create_verification(token, str(member.id))
     link = f"{VERIFY_BASE}/start/{token}"
 
-    # Post the verification link in the mod/log channel tagging the user
+    # Fetch the correct channel
     ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
     if ch:
         await ch.send(f"{member.mention}, welcome! Please verify here: {link}")
-    # Optionally assign limited role until verification
+        print(f"Sent verification link to {member.name} in mod/log channel.")
+    else:
+        # fallback if channel not found
+        print("MOD_LOG_CHANNEL_ID not found or bot lacks permission.")
 
 
 # -----------------------
