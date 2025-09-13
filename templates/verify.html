@@ -4,20 +4,43 @@
   <meta charset="utf-8" />
   <title>AegisX-S Verification</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <script src="/static/verify.js"></script>
+  <script src="/static/verify.js" defer></script>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 700px; margin: auto; }
-    #codebox { font-size: 18px; background:#f2f2f2; padding:10px; border-radius:6px; }
-    #status { margin-top: 12px; color: #333; }
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 720px; margin: auto; color:#222; }
+    #card { border: 1px solid #e6e6e6; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }
+    #codebox { font-size: 20px; background:#f9f9f9; padding:12px; border-radius:6px; display:inline-block; }
+    #status { margin-top: 16px; color: #333; }
+    .muted { color:#666; font-size:0.95rem; }
+    .success { color: #0a8a0a; font-weight:600; }
+    .danger { color: #b30000; font-weight:600; }
+    #spinner { display:inline-block; width:18px; height:18px; border:3px solid #e0e0e0; border-top-color:#333; border-radius:50%; animation: spin 1s linear infinite; vertical-align: middle; margin-left:8px;}
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .reason { background:#f6f6f6; padding:10px; border-radius:6px; margin-top:12px; font-family:monospace; font-size:0.95rem; white-space:pre-wrap; }
   </style>
 </head>
 <body>
-  <h1>Verification</h1>
-  <p>Please interact naturally: move your mouse, scroll a bit, and type the code below. This helps prove you're human and creates your device DNA.</p>
-  <div id="codebox"><strong id="challenge">AB12</strong></div>
-  <input id="typed" placeholder="Type the code above" autocomplete="off"/>
-  <p id="status">Collecting signals…</p>
+  <div id="card">
+    <h2>Verify your account</h2>
+    <p class="muted">This page collects basic browser signals (device fingerprint, mouse & typing patterns) to help verify your account. Your privacy is respected — data is stored for a short time and used only for verification.</p>
+
+    <p>Type the code below and interact a little: move your mouse, scroll, and type the code.</p>
+    <div id="codebox"><strong id="challenge">AB12</strong></div>
+    <input id="typed" placeholder="Type the code above" autocomplete="off" style="display:block;margin-top:12px;padding:10px;width:100%;box-sizing:border-box" />
+
+    <div id="status">
+      <div id="msg">Collecting signals…</div>
+    </div>
+
+    <div id="extra" style="margin-top:12px;">
+      <div id="reasonBox" style="display:none;">
+        <strong>Result details</strong>
+        <div id="reason" class="reason"></div>
+      </div>
+    </div>
+  </div>
+
   <script>
+    // token injected server-side
     const TOKEN = "{{ token }}";
     window.AEGIS_TOKEN = TOKEN;
   </script>
