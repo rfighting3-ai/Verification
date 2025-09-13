@@ -4,3 +4,4 @@ aiosqlite==0.18.0
 discord.py==2.4.0
 numpy==1.25.2
 networkx==3.2
+gunicorn web:app --bind 0.0.0.0:$PORT --workers 1
