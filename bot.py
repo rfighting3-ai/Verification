@@ -74,7 +74,8 @@ async def on_member_join(member: discord.Member):
     recent_joins.append(time.time())
     token = secrets.token_urlsafe(18)
     await create_verification(token, str(member.id))
-    link = f'http://localhost:5000/start/{token}'
+    VERIFY_BASE = os.getenv('VERIFY_BASE', 'http://localhost:5000')
+    link = f'{VERIFY_BASE}/start/{token}'
     try:
         await member.send(f'Welcome to {member.guild.name}! Please verify here: {link}')
     except Exception:
