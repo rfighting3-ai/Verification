@@ -13,7 +13,7 @@ Optional:
 - ADMIN_SECRET (for /admin/export)
 - RATE_WINDOW_SECONDS, RATE_LIMIT_PER_WINDOW
 """
-
+import aiosqlite
 from flask import Flask, request, render_template, jsonify
 import asyncio, os, json, time, hmac, hashlib
 import aiohttp
@@ -165,6 +165,47 @@ def admin_export():
         cw.writerow(list(r))
     res = si.getvalue()
     return app.response_class(res, mimetype='text/csv', headers={'Content-Disposition':'attachment; filename=verifications.csv'})
+
+@app.route('/status/<token>')
+def status(token):
+    """
+    Return JSON about the verification token:
+      { ok: True, discord_id, status, used, action, reason, quarantine_until }
+    status is typically: 'pending', 'verified', or the DB status value.
+    """
+    async def _fetch():
+        # use existing get_verification() from db.py
+        v = await get_verification(token)
+        if not v:
+            return None
+        # v: (id, discord_id, token, status, used, created_at, expires_at)
+        _, discord_id, _, status_val, used, created_at, expires_at = v
+        # latest action for that discord_id (if any)
+        async with aiosqlite.connect('aegisx_s.db') as conn:
+            cur = await conn.execute(
+                'SELECT action, reason, created_at FROM actions WHERE discord_id = ? ORDER BY created_at DESC LIMIT 1',
+                (str(discord_id),)
+            )
+            act = await cur.fetchone()
+            cur2 = await conn.execute(
+                'SELECT until_ts FROM quarantined WHERE discord_id = ? ORDER BY created_at DESC LIMIT 1',
+                (str(discord_id),)
+            )
+            qrow = await cur2.fetchone()
+        return {
+            'discord_id': str(discord_id),
+            'status': status_val or 'pending',
+            'used': bool(used),
+            'action': act[0] if act else None,
+            'reason': act[1] if act and act[1] else None,
+            'quarantine_until': int(qrow[0]) if qrow and qrow[0] else None
+        }
+
+    res = asyncio.get_event_loop().run_until_complete(_fetch())
+    if not res:
+        return jsonify({'ok': False, 'error': 'token not found'}), 404
+    return jsonify({'ok': True, **res})
+
 
 @app.route('/')
 def index():
