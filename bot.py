@@ -3,7 +3,11 @@ import discord
 from discord.ext import commands, tasks
 import asyncio, secrets, time, os
 from db import init_db, create_verification, add_action, quarantine_member, get_quarantined
+import aiosqlite
 
+# -----------------------
+# Config
+# -----------------------
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
     raise RuntimeError('Please set DISCORD_BOT_TOKEN environment variable.')
@@ -12,19 +16,28 @@ GUILD_ID = 1416287601677176916
 VERIFY_ROLE_ID = 1416287654089068544
 QUARANTINE_ROLE_ID = 1416287684514676786
 MOD_LOG_CHANNEL_ID = 1416287627128078439
-
 VERIFY_BASE = os.getenv('VERIFY_BASE', 'https://localhost:5000')
 
+# -----------------------
+# Bot setup
+# -----------------------
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
+intents.message_content = True  # Needed for !commands
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 recent_joins = []
 surge_mode = False
 
 # -----------------------
-# DB init & tasks
+# Error logging
+# -----------------------
+@bot.event
+async def on_command_error(ctx, error):
+    print(f"Error in command {ctx.command}: {error}")
+
+# -----------------------
+# Bot ready
 # -----------------------
 @bot.event
 async def on_ready():
@@ -33,7 +46,9 @@ async def on_ready():
     surge_check.start()
     quarantine_check.start()
 
-
+# -----------------------
+# Surge mode
+# -----------------------
 @tasks.loop(seconds=10)
 async def surge_check():
     global surge_mode
@@ -51,7 +66,9 @@ async def surge_check():
         if ch:
             await ch.send('✅ Surge ended: returning to normal verification.')
 
-
+# -----------------------
+# Quarantine check
+# -----------------------
 @tasks.loop(seconds=60)
 async def quarantine_check():
     rows = await get_quarantined()
@@ -65,11 +82,10 @@ async def quarantine_check():
                 qrole = guild.get_role(QUARANTINE_ROLE_ID)
                 if qrole in member.roles:
                     try:
-                        await member.remove_roles(qrole, reason='Quarantine period expired.')
+                        await member.remove_roles(qrole, reason='Quarantine expired.')
                     except:
                         pass
             await add_action(discord_id, 'quarantine_expired', 'Auto-unquarantine after time-bomb expiration.')
-
 
 # -----------------------
 # Member join verification
@@ -84,15 +100,52 @@ async def on_member_join(member: discord.Member):
     await create_verification(token, str(member.id))
     link = f"{VERIFY_BASE}/start/{token}"
 
-    # Fetch the correct channel
+    # Send verification link in MOD_LOG_CHANNEL_ID
     ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
     if ch:
         await ch.send(f"{member.mention}, welcome! Please verify here: {link}")
-        print(f"Sent verification link to {member.name} in mod/log channel.")
+        print(f"Sent verification link to {member.name}")
     else:
-        # fallback if channel not found
         print("MOD_LOG_CHANNEL_ID not found or bot lacks permission.")
 
+# -----------------------
+# Manual commands
+# -----------------------
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def verifynow(ctx, member: discord.Member):
+    token = secrets.token_urlsafe(18)
+    await create_verification(token, str(member.id))
+    link = f"{VERIFY_BASE}/start/{token}"
+    ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if ch:
+        await ch.send(f"{member.mention}, please verify here: {link}")
+        await ctx.send(f"✅ Verification link posted in mod/log channel for {member.mention}")
+    else:
+        await ctx.send("⚠️ MOD_LOG_CHANNEL_ID not found or bot lacks permission.")
+
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def scan(ctx, member: discord.Member):
+    async with aiosqlite.connect('aegisx_s.db') as db:
+        cur = await db.execute(
+            'SELECT v.discord_id, f.fp, f.ip, f.asn, f.ua, f.honeypot '
+            'FROM verifications v LEFT JOIN fingerprints f ON v.token=f.token '
+            'WHERE v.discord_id = ? ORDER BY f.created_at DESC LIMIT 1',
+            (str(member.id),)
+        )
+        row = await cur.fetchone()
+        if not row:
+            await ctx.send('No verification/fingerprint found for that user.')
+            return
+        discord_id, fp, ip, asn, ua, honeypot = row
+        embed = discord.Embed(title='Quick Scan', color=discord.Color.orange())
+        embed.add_field(name='Discord ID', value=str(discord_id), inline=False)
+        embed.add_field(name='Fingerprint', value=str(fp or 'N/A'), inline=True)
+        embed.add_field(name='IP', value=str(ip or 'N/A'), inline=True)
+        embed.add_field(name='ASN', value=str(asn or 'N/A'), inline=False)
+        embed.add_field(name='Honeypot', value='Yes' if honeypot else 'No', inline=True)
+        await ctx.send(embed=embed)
 
 # -----------------------
 # Quarantine helper
@@ -112,5 +165,7 @@ async def apply_quarantine(member: discord.Member, hours=24, reason='Suspicious 
     except Exception as e:
         print('Failed to apply quarantine', e)
 
-
+# -----------------------
+# Run bot
+# -----------------------
 bot.run(TOKEN)
