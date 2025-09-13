@@ -1,21 +1,20 @@
 # bot.py
 import discord
 from discord.ext import commands, tasks
-import asyncio, secrets, time, os, json
-from db import init_db, create_verification, save_dna_profile, add_action, save_fingerprint, quarantine_member, get_quarantined
-from detection import compute_risk
+import asyncio, secrets, time, os
+from db import init_db, create_verification, add_action, quarantine_member, get_quarantined
 import aiosqlite
 
-# Config from you
-TOKEN_ENV = 'DISCORD_BOT_TOKEN'
-TOKEN = os.getenv(TOKEN_ENV)
+TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
-    raise RuntimeError(f'Please set the {TOKEN_ENV} environment variable with your bot token.')
+    raise RuntimeError('Please set DISCORD_BOT_TOKEN environment variable.')
 
 GUILD_ID = 1416287601677176916
 VERIFY_ROLE_ID = 1416287654089068544
 QUARANTINE_ROLE_ID = 1416287684514676786
 MOD_LOG_CHANNEL_ID = 1416287627128078439
+
+VERIFY_BASE = os.getenv('VERIFY_BASE', 'https://localhost:5000')
 
 intents = discord.Intents.default()
 intents.members = True
@@ -24,13 +23,19 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 recent_joins = []
 surge_mode = False
 
+# -----------------------
+# DB init & tasks
+# -----------------------
 @bot.event
 async def on_ready():
     print('AegisX-S Bot ready as', bot.user)
     await init_db()
     surge_check.start()
     quarantine_check.start()
-    # no honeypot creation by bot in demo; honeypot is in web page
+    # Sync slash commands
+    guild = discord.Object(id=GUILD_ID)
+    await bot.tree.sync(guild=guild)
+    print("Slash commands synced.")
 
 @tasks.loop(seconds=10)
 async def surge_check():
@@ -43,7 +48,7 @@ async def surge_check():
     if len(recent_joins) >= 3 and not surge_mode:
         surge_mode = True
         if ch:
-            await ch.send('⚠️ Surge detected: multiple joins. Entering Surge Mode (stricter verification).')
+            await ch.send('⚠️ Surge detected: multiple joins. Entering Surge Mode.')
     elif len(recent_joins) == 0 and surge_mode:
         surge_mode = False
         if ch:
@@ -63,60 +68,45 @@ async def quarantine_check():
                 if qrole in member.roles:
                     try:
                         await member.remove_roles(qrole, reason='Quarantine period expired.')
-                    except Exception:
+                    except:
                         pass
             await add_action(discord_id, 'quarantine_expired', 'Auto-unquarantine after time-bomb expiration.')
 
+# -----------------------
+# Member join verification
+# -----------------------
 @bot.event
 async def on_member_join(member: discord.Member):
     if member.guild.id != GUILD_ID:
         return
     recent_joins.append(time.time())
+
     token = secrets.token_urlsafe(18)
     await create_verification(token, str(member.id))
-    VERIFY_BASE = os.getenv('VERIFY_BASE', 'http://localhost:5000')
-    link = f'{VERIFY_BASE}/start/{token}'
-    try:
-        await member.send(f'Welcome to {member.guild.name}! Please verify here: {link}')
-    except Exception:
-        ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
-        if ch:
-            await ch.send(f'Could not DM {member.mention}. Verification link (public): {link}')
-    # give limited role if needed (optional)
+    link = f"{VERIFY_BASE}/start/{token}"
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def verifynow(ctx, member: discord.Member):
+    # Send ephemeral-like message using slash command interaction style
+    ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if ch:
+        await ch.send(f"{member.mention}, your verification link: {link} (only you can see this)")
+    # Optionally: assign temporary limited role until verification
+
+# -----------------------
+# Slash command for verification
+# -----------------------
+@bot.tree.command(name="verify", description="Get your verification link")
+async def verify(interaction: discord.Interaction):
     token = secrets.token_urlsafe(18)
-    await create_verification(token, str(member.id))
-    try:
-        await member.send(f'Please verify here: http://localhost:5000/start/{token}')
-        await ctx.send(f'Verify link DMd to {member.mention}')
-    except Exception:
-        await ctx.send('Failed to DM user.')
+    await create_verification(token, str(interaction.user.id))
+    link = f"{VERIFY_BASE}/start/{token}"
+    await interaction.response.send_message(
+        f"Here’s your verification link: {link}",
+        ephemeral=True  # Only visible to user
+    )
 
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def scan(ctx, member: discord.Member):
-    async with aiosqlite.connect('aegisx_s.db') as db:
-        cur = await db.execute(
-            'SELECT v.discord_id, f.fp, f.ip, f.asn, f.ua, f.honeypot FROM verifications v LEFT JOIN fingerprints f ON v.token=f.token WHERE v.discord_id = ? ORDER BY f.created_at DESC LIMIT 1',
-            (str(member.id),)
-        )
-        row = await cur.fetchone()
-        if not row:
-            await ctx.send('No verification/fingerprint found for that user.')
-            return
-        discord_id, fp, ip, asn, ua, honeypot = row
-        embed = discord.Embed(title='Quick Scan', color=discord.Color.orange())
-        embed.add_field(name='Discord ID', value=str(discord_id), inline=False)
-        embed.add_field(name='Fingerprint', value=str(fp or 'N/A'), inline=True)
-        embed.add_field(name='IP', value=str(ip or 'N/A'), inline=True)
-        embed.add_field(name='ASN', value=str(asn or 'N/A'), inline=False)
-        embed.add_field(name='Honeypot', value='Yes' if honeypot else 'No', inline=True)
-        await ctx.send(embed=embed)
-
-# enforced quarantine helper (no auto-ban)
+# -----------------------
+# Quarantine helper
+# -----------------------
 async def apply_quarantine(member: discord.Member, hours=24, reason='Suspicious verification'):
     guild = member.guild
     qrole = guild.get_role(QUARANTINE_ROLE_ID)
