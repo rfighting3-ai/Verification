@@ -1,48 +1,84 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>AegisX-S Verification</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <script src="/static/verify.js" defer></script>
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 720px; margin: auto; color:#222; }
-    #card { border: 1px solid #e6e6e6; padding: 20px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.03); }
-    #codebox { font-size: 20px; background:#f9f9f9; padding:12px; border-radius:6px; display:inline-block; }
-    #status { margin-top: 16px; color: #333; }
-    .muted { color:#666; font-size:0.95rem; }
-    .success { color: #0a8a0a; font-weight:600; }
-    .danger { color: #b30000; font-weight:600; }
-    #spinner { display:inline-block; width:18px; height:18px; border:3px solid #e0e0e0; border-top-color:#333; border-radius:50%; animation: spin 1s linear infinite; vertical-align: middle; margin-left:8px;}
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .reason { background:#f6f6f6; padding:10px; border-radius:6px; margin-top:12px; font-family:monospace; font-size:0.95rem; white-space:pre-wrap; }
-  </style>
-</head>
-<body>
-  <div id="card">
-    <h2>Verify your account</h2>
-    <p class="muted">This page collects basic browser signals (device fingerprint, mouse & typing patterns) to help verify your account. Your privacy is respected — data is stored for a short time and used only for verification.</p>
+// static/verify.js
 
-    <p>Type the code below and interact a little: move your mouse, scroll, and type the code.</p>
-    <div id="codebox"><strong id="challenge">AB12</strong></div>
-    <input id="typed" placeholder="Type the code above" autocomplete="off" style="display:block;margin-top:12px;padding:10px;width:100%;box-sizing:border-box" />
+(function() {
+  const typedEl = document.getElementById("typed");
+  const challengeEl = document.getElementById("challenge");
+  const msgEl = document.getElementById("msg");
+  const reasonBox = document.getElementById("reasonBox");
+  const reasonEl = document.getElementById("reason");
 
-    <div id="status">
-      <div id="msg">Collecting signals…</div>
-    </div>
+  let dna = { typing: [], mouse: [] };
 
-    <div id="extra" style="margin-top:12px;">
-      <div id="reasonBox" style="display:none;">
-        <strong>Result details</strong>
-        <div id="reason" class="reason"></div>
-      </div>
-    </div>
-  </div>
+  // collect typing patterns
+  typedEl.addEventListener("keydown", e => {
+    dna.typing.push({ key: e.key, t: Date.now() });
+  });
 
-  <script>
-    // token injected server-side
-    const TOKEN = "{{ token }}";
-    window.AEGIS_TOKEN = TOKEN;
-  </script>
-</body>
-</html>
+  // collect mouse movements
+  document.addEventListener("mousemove", e => {
+    dna.mouse.push({ x: e.clientX, y: e.clientY, t: Date.now() });
+  });
+
+  // submit once they typed code correctly
+  typedEl.addEventListener("input", async () => {
+    if (typedEl.value.trim().toUpperCase() === challengeEl.innerText.trim().toUpperCase()) {
+      msgEl.innerHTML = "Submitting… <span id='spinner'></span>";
+      await submitVerification();
+      pollStatus();
+    }
+  });
+
+  async function submitVerification() {
+    try {
+      const res = await fetch("/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: window.AEGIS_TOKEN,
+          fp: navigator.userAgent,
+          dna,
+          honeypot: false
+        })
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        msgEl.innerHTML = "❌ Failed to submit";
+        reasonBox.style.display = "block";
+        reasonEl.innerText = data.error || "Unknown error";
+      } else {
+        msgEl.innerHTML = "✅ Submitted, waiting for result…";
+      }
+    } catch (err) {
+      msgEl.innerHTML = "❌ Network error";
+    }
+  }
+
+  async function pollStatus() {
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries++;
+      try {
+        const res = await fetch(`/status/${window.AEGIS_TOKEN}`);
+        const data = await res.json();
+        if (data.ok && data.status !== "pending") {
+          clearInterval(timer);
+          if (data.status === "verified") {
+            msgEl.innerHTML = "✅ Verification successful!";
+          } else {
+            msgEl.innerHTML = "❌ Verification failed.";
+          }
+          reasonBox.style.display = "block";
+          reasonEl.innerText = `Status: ${data.status}\nUsed: ${data.used}`;
+        }
+      } catch (e) {
+        clearInterval(timer);
+        msgEl.innerHTML = "❌ Error checking status";
+      }
+      if (tries > 20) { // stop after ~20s
+        clearInterval(timer);
+        msgEl.innerHTML = "❌ Timed out. Please try again.";
+      }
+    }, 1000);
+  }
+
+})();
