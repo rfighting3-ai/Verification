@@ -3,11 +3,7 @@ import discord
 from discord.ext import commands, tasks
 import asyncio, secrets, time, os
 from db import init_db, create_verification, add_action, quarantine_member, get_quarantined
-import aiosqlite
 
-# -----------------------
-# Config
-# -----------------------
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
     raise RuntimeError('Please set DISCORD_BOT_TOKEN environment variable.')
@@ -27,7 +23,7 @@ recent_joins = []
 surge_mode = False
 
 # -----------------------
-# Bot ready
+# DB init & tasks
 # -----------------------
 @bot.event
 async def on_ready():
@@ -36,9 +32,7 @@ async def on_ready():
     surge_check.start()
     quarantine_check.start()
 
-# -----------------------
-# Surge detection
-# -----------------------
+
 @tasks.loop(seconds=10)
 async def surge_check():
     global surge_mode
@@ -56,9 +50,7 @@ async def surge_check():
         if ch:
             await ch.send('✅ Surge ended: returning to normal verification.')
 
-# -----------------------
-# Quarantine check
-# -----------------------
+
 @tasks.loop(seconds=60)
 async def quarantine_check():
     rows = await get_quarantined()
@@ -77,6 +69,7 @@ async def quarantine_check():
                         pass
             await add_action(discord_id, 'quarantine_expired', 'Auto-unquarantine after time-bomb expiration.')
 
+
 # -----------------------
 # Member join verification
 # -----------------------
@@ -90,22 +83,12 @@ async def on_member_join(member: discord.Member):
     await create_verification(token, str(member.id))
     link = f"{VERIFY_BASE}/start/{token}"
 
+    # Post the verification link in the mod/log channel tagging the user
     ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
     if ch:
         await ch.send(f"{member.mention}, welcome! Please verify here: {link}")
+    # Optionally assign limited role until verification
 
-# -----------------------
-# Manual verification command
-# -----------------------
-@bot.command()
-@commands.has_permissions(manage_guild=True)
-async def verifynow(ctx, member: discord.Member):
-    token = secrets.token_urlsafe(18)
-    await create_verification(token, str(member.id))
-    ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
-    if ch:
-        await ch.send(f"{member.mention}, here is your verification link: {VERIFY_BASE}/start/{token}")
-    await ctx.send(f"✅ Verification link sent for {member.mention} in {ch.mention if ch else 'mod channel'}")
 
 # -----------------------
 # Quarantine helper
@@ -124,5 +107,6 @@ async def apply_quarantine(member: discord.Member, hours=24, reason='Suspicious 
             await ch.send(f'👮 Quarantine applied to {member.mention}: {reason}')
     except Exception as e:
         print('Failed to apply quarantine', e)
+
 
 bot.run(TOKEN)
