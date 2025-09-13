@@ -1,7 +1,12 @@
 # detection.py
-import numpy as np
+"""
+Upgraded risk engine inspired by Double Counter premium features.
+Synchronous computation: expects ip_info (dict) to already contain
+results from IP intelligence (is_vpn, is_tor, proxy_score, asn, is_datacenter).
+"""
+
 from typing import List, Dict
-import time
+import numpy as np
 
 def cosine(a, b):
     a = np.array(a, dtype=float)
@@ -23,60 +28,107 @@ def compute_risk(fp_rows: List[Dict],
                  ip_info: Dict,
                  honeypot_triggered: bool,
                  account_age_days: int,
-                 social_scores: Dict = None) -> Dict:
-
-    score = 0
+                 social_scores: Dict = None,
+                 db_stats: Dict = None) -> Dict:
+    """
+    db_stats: optional dict containing:
+      - same_ip_count: int
+      - same_fp_count: int
+      - previously_banned_count: int
+    """
+    score = 0.0
     reasons = []
     dna_matches = []
 
-    if fp_rows and len(fp_rows) > 1:
-        extra = min(40, 10 * (len(fp_rows) - 1))
-        score += extra
-        reasons.append(f'Duplicate fingerprint: {len(fp_rows)} previous hits (+{extra})')
+    # Premium weights (tuneable)
+    W_DUP_FP = 25.0
+    W_DUP_IP = 20.0
+    W_ASN_DATACENTER = 25.0
+    W_VPN = 35.0
+    W_TOR = 40.0
+    W_PROXY_SCORE_FACTOR = 0.5  # multiply proxy_score (0-100) by this
+    W_HONEYPOT = 90.0
+    W_ACCOUNT_AGE = 20.0
+    W_DNA_MATCH = 35.0
+    W_PREVIOUS_BANS = 25.0
+    W_SOCIAL_ISOLATION = 8.0
 
-    if ip_info.get('is_datacenter'):
-        score += 25
-        reasons.append('Datacenter ASN detected (+25)')
-    if ip_info.get('is_vpn'):
-        score += 30
-        reasons.append('VPN/Tor/proxy detected (+30)')
+    # duplicate fingerprint (strong signal)
+    if db_stats:
+        if db_stats.get('same_fp_count', 0) > 0:
+            delta = min(3, db_stats['same_fp_count'])  # scale
+            add = W_DUP_FP * delta
+            score += add
+            reasons.append(f'Duplicate fingerprint matches {db_stats["same_fp_count"]} (+{add:.0f})')
 
+        if db_stats.get('same_ip_count', 0) > 0:
+            delta = min(4, db_stats['same_ip_count'])
+            add = W_DUP_IP * (delta / 2.0)
+            score += add
+            reasons.append(f'Same IP seen across {db_stats["same_ip_count"]} accounts (+{add:.0f})')
+
+        if db_stats.get('previously_banned_count', 0) > 0:
+            add = min( W_PREVIOUS_BANS, db_stats['previously_banned_count'] * 10 )
+            score += add
+            reasons.append(f'Previously banned accounts on same device/IP (+{add:.0f})')
+
+    # ip_info flags
+    if ip_info:
+        if ip_info.get('is_datacenter'):
+            score += W_ASN_DATACENTER
+            reasons.append(f'Datacenter ASN detected (+{W_ASN_DATACENTER})')
+        if ip_info.get('is_vpn'):
+            score += W_VPN
+            reasons.append(f'VPN/proxy likely (+{W_VPN})')
+        if ip_info.get('is_tor'):
+            score += W_TOR
+            reasons.append(f'Tor exit node detected (+{W_TOR})')
+        proxy_score = ip_info.get('proxy_score')
+        if proxy_score:
+            add = proxy_score * W_PROXY_SCORE_FACTOR
+            score += add
+            reasons.append(f'Proxy score {proxy_score} (+{add:.1f})')
+
+    # honeypot is nearly certain
     if honeypot_triggered:
-        score += 80
-        reasons.append('Honeypot element interacted (automation) (+80)')
+        score += W_HONEYPOT
+        reasons.append(f'Honeypot triggered (+{W_HONEYPOT})')
 
-    if account_age_days < 7:
-        add = 10
-        score += add
-        reasons.append(f'New Discord account (<7d) (+{add})')
+    # account age
+    if account_age_days < 1:
+        score += W_ACCOUNT_AGE
+        reasons.append(f'New account (<1d) (+{W_ACCOUNT_AGE})')
+    elif account_age_days < 7:
+        score += W_ACCOUNT_AGE * 0.6
+        reasons.append(f'New account (<7d) (+{W_ACCOUNT_AGE*0.6:.0f})')
 
-    if social_scores:
-        iso = social_scores.get('is_isolated', False)
-        if iso:
-            score += 5
-            reasons.append('Account has no strong social graph (isolated) (+5)')
-        else:
-            score -= 5
-            reasons.append('Account connected to known trusted members (-5)')
-
+    # DNA comparisons
     current_profile = None
     if fp_rows:
-        try:
-            # our demo stores dna inside fp JSON if available
-            import json
-            fp_json = fp_rows[0][2] if len(fp_rows[0])>2 else None
-            parsed = json.loads(fp_json) if fp_json else {}
-            current_profile = parsed.get('dna')
-        except Exception:
-            current_profile = None
-
-    if current_profile:
+        current_profile = fp_rows[0].get('dna')
+    if current_profile and known_dna_profiles:
         for prof in known_dna_profiles:
-            sim = dna_similarity(current_profile, prof)
-            if sim > 0.80:
+            # prof: {'discord_id','typing','mouse'}
+            other_profile = {'typing': prof.get('typing', []), 'mouse': prof.get('mouse', [])}
+            sim = dna_similarity(current_profile, other_profile)
+            if sim > 0.78:
                 dna_matches.append({'discord_id': prof.get('discord_id'), 'sim': round(sim, 3)})
-                score += 35
-                reasons.append(f'DNA similarity to {prof.get("discord_id")} (sim={sim:.2f}) (+35)')
+                score += W_DNA_MATCH
+                reasons.append(f'DNA match to {prof.get("discord_id")} sim={sim:.2f} (+{W_DNA_MATCH})')
 
-    final = max(0, min(100, int(score)))
-    return {'risk_score': final, 'reasons': reasons, 'dna_matches': dna_matches, 'computed_at': int(time.time())}
+    # social isolation
+    if social_scores:
+        if social_scores.get('is_isolated', False):
+            score += W_SOCIAL_ISOLATION
+            reasons.append(f'No social links (+{W_SOCIAL_ISOLATION})')
+        else:
+            reasons.append('Social links present (-8)')
+
+    # normalize and bounds
+    final = max(0, min(100, int(round(score))))
+    return {
+        'risk_score': final,
+        'reasons': reasons,
+        'dna_matches': dna_matches,
+        'computed_at': int(__import__('time').time())
+    }
