@@ -5,6 +5,9 @@ import asyncio, secrets, time, os
 from db import init_db, create_verification, add_action, quarantine_member, get_quarantined
 import aiosqlite
 
+# -----------------------
+# Config
+# -----------------------
 TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 if not TOKEN:
     raise RuntimeError('Please set DISCORD_BOT_TOKEN environment variable.')
@@ -24,7 +27,7 @@ recent_joins = []
 surge_mode = False
 
 # -----------------------
-# DB init & tasks
+# Bot ready
 # -----------------------
 @bot.event
 async def on_ready():
@@ -32,11 +35,10 @@ async def on_ready():
     await init_db()
     surge_check.start()
     quarantine_check.start()
-    # Sync slash commands
-    guild = discord.Object(id=GUILD_ID)
-    await bot.tree.sync(guild=guild)
-    print("Slash commands synced.")
 
+# -----------------------
+# Surge detection
+# -----------------------
 @tasks.loop(seconds=10)
 async def surge_check():
     global surge_mode
@@ -54,6 +56,9 @@ async def surge_check():
         if ch:
             await ch.send('✅ Surge ended: returning to normal verification.')
 
+# -----------------------
+# Quarantine check
+# -----------------------
 @tasks.loop(seconds=60)
 async def quarantine_check():
     rows = await get_quarantined()
@@ -85,24 +90,22 @@ async def on_member_join(member: discord.Member):
     await create_verification(token, str(member.id))
     link = f"{VERIFY_BASE}/start/{token}"
 
-    # Send ephemeral-like message using slash command interaction style
     ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
     if ch:
-        await ch.send(f"{member.mention}, your verification link: {link} (only you can see this)")
-    # Optionally: assign temporary limited role until verification
+        await ch.send(f"{member.mention}, welcome! Please verify here: {link}")
 
 # -----------------------
-# Slash command for verification
+# Manual verification command
 # -----------------------
-@bot.tree.command(name="verify", description="Get your verification link")
-async def verify(interaction: discord.Interaction):
+@bot.command()
+@commands.has_permissions(manage_guild=True)
+async def verifynow(ctx, member: discord.Member):
     token = secrets.token_urlsafe(18)
-    await create_verification(token, str(interaction.user.id))
-    link = f"{VERIFY_BASE}/start/{token}"
-    await interaction.response.send_message(
-        f"Here’s your verification link: {link}",
-        ephemeral=True  # Only visible to user
-    )
+    await create_verification(token, str(member.id))
+    ch = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if ch:
+        await ch.send(f"{member.mention}, here is your verification link: {VERIFY_BASE}/start/{token}")
+    await ctx.send(f"✅ Verification link sent for {member.mention} in {ch.mention if ch else 'mod channel'}")
 
 # -----------------------
 # Quarantine helper
