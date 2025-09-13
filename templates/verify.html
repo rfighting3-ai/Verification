@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>AegisX-S Verification</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <script src="/static/verify.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 700px; margin: auto; }
+    #codebox { font-size: 18px; background:#f2f2f2; padding:10px; border-radius:6px; }
+    #status { margin-top: 12px; color: #333; }
+  </style>
+</head>
+<body>
+  <h1>Verification</h1>
+  <p>Please interact naturally: move your mouse, scroll a bit, and type the code below. This helps prove you're human and creates your device DNA.</p>
+  <div id="codebox"><strong id="challenge">AB12</strong></div>
+  <input id="typed" placeholder="Type the code above" autocomplete="off"/>
+  <p id="status">Collecting signals…</p>
+  <script>
+    const TOKEN = "{{ token }}";
+    window.AEGIS_TOKEN = TOKEN;
+  </script>
+</body>
+</html>
